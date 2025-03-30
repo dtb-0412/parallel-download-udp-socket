@@ -1,16 +1,18 @@
+import hashlib
 import itertools
 import json
 import os
 import socket
+import struct
 import sys
 import threading
 import time
 from functools import wraps
 from typing import Any, Optional
 
-SERVER_ADDR = ("192.168.100.24", 12345)  # (sys.argv[1], int(sys.argv[2]))  #
+SERVER_ADDR = (sys.argv[1], int(sys.argv[2]))
 DATA_FOLDER = "client_data"
-CHUNK_SIZE = 1024  # 8KiB
+CHUNK_SIZE = 16384  # 16KiB
 REFRESH_TIME = 5  # Check input file every 5 seconds
 
 BASE_10_UNITS = (
@@ -79,7 +81,8 @@ class Client:
 	@measure
 	def download(self, filepath: str, file_size: int, new_name: Optional[str] = None) -> bool:
 		new_size, unit = convert_size(file_size, base_10=True)
-		print(f"Downloading [{filepath}] - [{new_size:.2f} {unit}]")
+		print("--------------------------------------------------")
+		print(f"Downloading [{filepath}] - [{new_size:.2f} {unit}]\n")
 		# Prepare downloading
 		quotient, remainder = divmod(file_size, 4)
 		sizes = [quotient] * 3 + [quotient + remainder]  # Chunk sizes
@@ -124,6 +127,7 @@ class Client:
 
 	@staticmethod
 	def _update_progress(sizes: list, totals: list, errors: list, lock: threading.Lock) -> None:
+		file_size = sum(sizes)
 		while True:
 			with lock:
 				if any(errors):
@@ -132,11 +136,14 @@ class Client:
 				progresses = [int(total / size * 100) for total, size in zip(totals, sizes)]
 			# Print progress bar
 			progress_bar = " | ".join(
-				"Part {}: {:17}".format(i, f"{'█' * int(progress / 8.3):12} {progress}%")
+				"Part {}: {:12}".format(i, f"{'█' * int(progress / 8.3):12}")
 				for i, progress in enumerate(progresses))
-			print(f"\r{progress_bar} | Downloaded: {sum(totals) / 1000} KB", end="")
+
+			downloaded = sum(totals)
+			print("\r{} | {:4} | {:.2f} KBs".format(progress_bar, f'{int(downloaded / file_size * 100)}%', downloaded), end="")
 
 			if all(progress == 100 for progress in progresses):
+				print()
 				break
 			time.sleep(0.02)
 		return None
@@ -160,34 +167,39 @@ class Client:
 				with lock:
 					errors[index] = True
 				break
-			else:
-				sock.sendto(f"ACK {offset}".encode(), SERVER_ADDR)
-				chunk_file.write(data)
 
-				total = min(total + chunk_size, size)
-				with lock:  # Update progress
-					totals[index] = total
-				if total == size:  # Download complete
-					finished = True
-					break
-				offset += chunk_size
-			# time.sleep(0.01)
+			sock.sendto(f"ACK {offset}".encode(), SERVER_ADDR)
+			chunk_file.write(data)
+
+			total = min(total + chunk_size, size)
+			with lock:  # Update progress
+				totals[index] = total
+			if total == size:  # Download complete
+				finished = True
+				break
+			offset += chunk_size
+
 		chunk_file.close()
 		sock.sendto("QUIT".encode(), SERVER_ADDR)
 		sock.close()
 		return finished
 
 	@staticmethod
-	def _try_recv(sock: socket.socket, offset: int, chunk_size: int, attempts: int = 3) -> Optional[bytes]:
+	def _try_recv(sock: socket.socket, offset: int, chunk_size: int, attempts: int = 5) -> Optional[bytes]:
 		data = None
 		while attempts:
 			sock.sendto(f"GET {offset} {chunk_size}".encode(), SERVER_ADDR)
 			try:
-				data, _ = sock.recvfrom(chunk_size)
+				packet, _ = sock.recvfrom(chunk_size + 32)
 			except TimeoutError:
 				attempts -= 1
-			else:
-				break
+				continue
+			# Verify packet
+			checksum, data = struct.unpack(f"32s{chunk_size}s", packet)
+			if checksum != hashlib.md5(data).hexdigest().encode():
+				attempts -= 1
+				continue
+			break
 		return data
 
 	def run(self) -> None:
@@ -199,31 +211,34 @@ class Client:
 			print(f"{i + 1:>03}   {filepath:50}   {new_size:.2f} {unit}")
 		print()
 
-		begin_time = 0
-		while True:
-			end_time = time.perf_counter()
-			if end_time - begin_time < REFRESH_TIME:
-				continue
+		try:
+			begin_time = 0
+			while True:
+				end_time = time.perf_counter()
+				if end_time - begin_time < REFRESH_TIME:
+					continue
 
-			print("Check download queue...")
-			with open("input.txt", "r") as file:
-				for line in file:
-					line = line.rstrip('\n')
-					if line.upper() == "STOP":
-						print("Client finished")
-						return None
+				print("Check download queue...")
+				with open("input.txt", "r") as file:
+					for line in file:
+						line = line.rstrip('\n')
+						if line.upper() == "STOP":
+							print("Client finished")
+							return None
 
-					filepath = line.split(' ')[0]
-					if self._file_list.get(filepath) is None:  # File unavailable
-						continue
+						filepath = line.split(' ')[0]
+						if self._file_list.get(filepath) is None:  # File unavailable
+							continue
 
-					file_size, downloaded = self._file_list[filepath]
-					if downloaded:  # File already downloaded
-						continue
+						file_size, downloaded = self._file_list[filepath]
+						if downloaded:  # File already downloaded
+							continue
 
-					if self.download(filepath, file_size):
-						self._file_list[filepath][-1] = True
-			begin_time = end_time
+						if self.download(filepath, file_size):
+							self._file_list[filepath][-1] = True
+				begin_time = end_time
+		except KeyboardInterrupt:
+			return None
 
 	def quit(self) -> None:
 		self._sock.sendto("QUIT".encode(), SERVER_ADDR)
