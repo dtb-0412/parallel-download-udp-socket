@@ -7,14 +7,14 @@ import struct
 PASSWORD = "admin@1234"
 SERVER_PORT = 12345
 DATA_FOLDER = os.path.join("server_data")
-SEND_BUF = 65536  # 32KiB
+SEND_BUF = 65536  # 64KiB
 RECV_BUF = 1024  # 1KiB
 
 
 class Server:
 	def __init__(self):
 		self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # Master socket
-		self._sock.bind(("192.168.100.24", SERVER_PORT))
+		self._sock.bind(("0.0.0.0", SERVER_PORT))
 		self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SEND_BUF)
 		self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RECV_BUF)
 		print("Server is initiated")
@@ -73,7 +73,7 @@ class Server:
 				if self._clients.get(addr) is not None:  # Remove client
 					file = self._clients.pop(addr)
 					file.close()
-				print(f"Client {addr} disconnected!")
+				print(f"Client {addr} disconnected!\n")
 
 			case "TERM":  # Admin terminate command
 				# Message: TERMINATE {password}
