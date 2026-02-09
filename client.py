@@ -10,7 +10,7 @@ import time
 from functools import wraps
 from typing import Any, Optional
 
-SERVER_ADDR = (sys.argv[1], int(sys.argv[2]))
+SERVER_ADDR = (sys.argv[1], int(sys.argv[2])) if len(sys.argv) == 3 else ("127.0.0.1", 12345)
 DATA_FOLDER = "client_data"
 CHUNK_SIZE = 16384  # 16KiB
 REFRESH_TIME = 5  # Check input file every 5 seconds
@@ -67,6 +67,19 @@ def measure(func):
 class Client:
 	def __init__(self):
 		self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		self._sock.settimeout(2)
+		# Check connectivity
+		try:
+			self._sock.sendto("HELLO".encode(), SERVER_ADDR)
+			_ = self._sock.recvfrom(1024)
+			print("Connected to server successfully!")
+		except TimeoutError:
+			print("Cannot connect to server (connection timed out).")
+			return
+		except Exception as e:
+			print(f"Unexpected error: {e}")
+			return
+
 		self._file_list = {}
 
 	def __del__(self):
@@ -83,7 +96,7 @@ class Client:
 		new_size, unit = convert_size(file_size, base_10=True)
 		print("--------------------------------------------------")
 		print(f"Downloading [{filepath}] - [{new_size:.2f} {unit}]\n")
-		# Prepare downloading
+		# Prepare to download
 		quotient, remainder = divmod(file_size, 4)
 		sizes = [quotient] * 3 + [quotient + remainder]  # Chunk sizes
 		offsets = [0] + list(itertools.accumulate(sizes[:-1]))  # Chunk offsets
@@ -107,7 +120,7 @@ class Client:
 		if any(errors):
 			print(f"Failed [{filepath}]")
 			return False
-		# Number filename if name collision
+		# Number filename if name duplicate
 		filename = new_name or os.path.basename(filepath)
 		name, ext = os.path.splitext(filename)
 		count = 1
@@ -211,34 +224,48 @@ class Client:
 			print(f"{i + 1:>03}   {filepath:50}   {new_size:.2f} {unit}")
 		print()
 
+		self.download_all()
+
+		# try:
+		# 	begin_time = 0
+		# 	while True:
+		# 		end_time = time.perf_counter()
+		# 		if end_time - begin_time < REFRESH_TIME:
+		# 			continue
+		#
+		# 		print("Check download queue...")
+		# 		with open("input.txt", "r") as file:
+		# 			for line in file:
+		# 				line = line.rstrip('\n')
+		# 				if line.upper() == "STOP":
+		# 					print("Client finished")
+		# 					return None
+		#
+		# 				filepath = line.split(' ')[0]
+		# 				if self._file_list.get(filepath) is None:  # File unavailable
+		# 					continue
+		#
+		# 				file_size, downloaded = self._file_list[filepath]
+		# 				if downloaded:  # File already downloaded
+		# 					continue
+		#
+		# 				if self.download(filepath, file_size):
+		# 					self._file_list[filepath][-1] = True
+		# 		begin_time = end_time
+		# except KeyboardInterrupt:
+		# 	return None
+
+	def download_all(self) -> None:
 		try:
-			begin_time = 0
-			while True:
-				end_time = time.perf_counter()
-				if end_time - begin_time < REFRESH_TIME:
+			for filepath, (file_size, downloaded) in self._file_list.items():
+				if downloaded:
 					continue
 
-				print("Check download queue...")
-				with open("input.txt", "r") as file:
-					for line in file:
-						line = line.rstrip('\n')
-						if line.upper() == "STOP":
-							print("Client finished")
-							return None
-
-						filepath = line.split(' ')[0]
-						if self._file_list.get(filepath) is None:  # File unavailable
-							continue
-
-						file_size, downloaded = self._file_list[filepath]
-						if downloaded:  # File already downloaded
-							continue
-
-						if self.download(filepath, file_size):
-							self._file_list[filepath][-1] = True
-				begin_time = end_time
-		except KeyboardInterrupt:
-			return None
+				if self.download(filepath, file_size):
+					self._file_list[filepath][-1] = True
+		except Exception as e:
+			print(e)
+		return None
 
 	def quit(self) -> None:
 		self._sock.sendto("QUIT".encode(), SERVER_ADDR)

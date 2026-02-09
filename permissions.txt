@@ -1,0 +1,11 @@
+[Whitelist]
+Videos
+Pictures
+Documents
+
+[Blacklist]
+Videos/Premium
+Documents/Secret
+
+Videos/forbidden_video_30mb.mp4
+Pictures/forbidden_picture_1.jpg
